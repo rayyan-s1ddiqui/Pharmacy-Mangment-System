@@ -3,49 +3,56 @@ name: Deploy to AWS ECS
 on:
   push:
     branches:
-      - master  # Ensure your branch name is correct
+      - main  # Change branch if needed
+  workflow_dispatch:
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REGISTRY: pharmacy-repo
+  ECR_REPOSITORY: pharmacy-ecr
+  CLUSTER_NAME: pharmacy-cluster
+  SERVICE_NAME: pharmacy-service
+  TASK_DEFINITION: pharmacy-task
+  IMAGE_TAG: ${{ github.sha }}
 
 jobs:
-  deploy:
-    name: Build & Deploy
+  build-and-deploy:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
-      - name: Configure AWS Credentials
+      - name: Set Up AWS Credentials
         uses: aws-actions/configure-aws-credentials@v2
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: us-east-1 # Store region in secrets
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v1
 
-      - name: Build and Push Docker Image
-        env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          ECR_REPOSITORY: pharmacy-repo
-          IMAGE_TAG: latest
+      - name: Build, Tag, and Push Docker Image
         run: |
-          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          docker build --no-cache -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
 
-      - name: Update ECS Task Definition
-        id: task-def
-        uses: aws-actions/amazon-ecs-render-task-definition@v1
-        with:
-          task-definition: task-definition.json
-          container-name: pharmacy-container
-          image: ${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_REPOSITORY }}:latest
+      - name: Update Task Definition
+        id: update-task-def
+        run: |
+          jq --arg IMAGE "$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" \
+             '.containerDefinitions[0].image = $IMAGE' \
+             $TASK_DEFINITION > new-task-def.json
+          echo "TASK_DEFINITION_FILE=new-task-def.json" >> $GITHUB_ENV
+
+      - name: Register New Task Definition
+        id: register-task-def
+        run: |
+          TASK_REVISION=$(aws ecs register-task-definition --cli-input-json file://$GITHUB_ENV::TASK_DEFINITION_FILE | jq -r '.taskDefinition.taskDefinitionArn')
+          echo "TASK_REVISION=$TASK_REVISION" >> $GITHUB_ENV
 
       - name: Deploy to Amazon ECS
-        uses: aws-actions/amazon-ecs-deploy-task-definition@v1
-        with:
-          task-definition: ${{ steps.task-def.outputs.task-definition }}
-          service: pharmacy-task
-          cluster: pharmacy-cluster
-          wait-for-service-stability: true
+        run: |
+          aws ecs update-service --cluster $CLUSTER_NAME --service $SERVICE_NAME --task-definition $TASK_REVISION
