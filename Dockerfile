@@ -1,17 +1,8 @@
-FROM node:18-alpine
-
-# Set working directory
+FROM node:12.18-alpine
+ENV NODE_ENV production
 WORKDIR /usr/src/app
-
-# Copy package.json and lock files first (to leverage Docker caching)
-COPY package.json package-lock.json ./
-
-# Install dependencies directly in the working directory
-RUN npm install --production --silent
-
-# Copy the rest of the application files
+COPY ["package.json", "package-lock.json*", "npm-shrinkwrap.json*", "./"]
+RUN npm install --production --silent && mv node_modules ../
 COPY . .
-
-# Expose port 8080 (if required by your app)
 EXPOSE 8080
 CMD npm start
